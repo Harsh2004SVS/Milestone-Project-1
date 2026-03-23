@@ -1,0 +1,4 @@
+node_modules/
+db/exam_system.db
+.server.pid
+server.log

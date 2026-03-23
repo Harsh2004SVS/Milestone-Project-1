@@ -1,0 +1,23 @@
+{
+  "name": "dynamic-online-exam-system",
+  "version": "1.0.0",
+  "description": "Dynamic Online Examination & Result Processing System using HTML, CSS, JS, SQL",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "online-exam",
+    "result-processing",
+    "sqlite",
+    "express",
+    "html-css-js"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  }
+}
