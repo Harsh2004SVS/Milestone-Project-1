@@ -518,11 +518,35 @@ async function apiRequest(url, options = {}) {
     }
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined
+    });
+  } catch (_) {
+    const isApiRoute = parseRoutePath(url).startsWith('/api/');
+    const canFallback = isApiRoute && !window.location.hostname.includes('localhost') && !window.location.hostname.startsWith('127.');
+    if (canFallback) {
+      return mockApiRequest(url, {
+        ...options,
+        headers
+      });
+    }
+    throw new Error('Network error while contacting server');
+  }
+
+  const isApiRoute = parseRoutePath(url).startsWith('/api/');
+  if ((response.status === 404 || response.status === 405) && isApiRoute) {
+    const canFallback = !window.location.hostname.includes('localhost') && !window.location.hostname.startsWith('127.');
+    if (canFallback) {
+      return mockApiRequest(url, {
+        ...options,
+        headers
+      });
+    }
+  }
 
   const text = await response.text();
   let data = {};
