@@ -36,6 +36,9 @@ let timerInterval = null;
 let timeLeftSeconds = 0;
 let adminMonitorInterval = null;
 const THEME_STORAGE_KEY = 'exam_app_theme';
+const IS_GITHUB_PAGES = window.location.hostname.endsWith('github.io');
+const MOCK_DB_STORAGE_KEY = 'exam_pro_mock_db_v1';
+const mockSessions = new Map();
 
 function getStoredTheme() {
   try {
@@ -73,6 +76,417 @@ if (themeToggleBtn) {
   });
 }
 
+function getDefaultMockDb() {
+  return {
+    users: [
+      { id: 1, username: 'admin', password: 'admin123', role: 'ADMIN', full_name: 'System Administrator' },
+      { id: 2, username: 'student1', password: 'student123', role: 'STUDENT', full_name: 'Student One' },
+      { id: 3, username: 'student2', password: 'student123', role: 'STUDENT', full_name: 'Student Two' }
+    ],
+    students: [
+      { id: 1, user_id: 2, name: 'student1' },
+      { id: 2, user_id: 3, name: 'student2' }
+    ],
+    exams: [
+      { id: 1, title: 'Web Development Basics', description: 'HTML, CSS, and JavaScript fundamentals', duration_minutes: 15, pass_percentage: 50 },
+      { id: 2, title: 'SQL Fundamentals', description: 'Database and SQL query basics', duration_minutes: 15, pass_percentage: 50 }
+    ],
+    questions: [
+      { id: 1, exam_id: 1, question_text: 'What does HTML stand for?', option_a: 'HyperText Markup Language', option_b: 'HighText Machine Language', option_c: 'Hyperlink and Text Markup Language', option_d: 'Home Tool Markup Language', correct_option: 'A', marks: 1 },
+      { id: 2, exam_id: 1, question_text: 'Which CSS property controls text size?', option_a: 'font-style', option_b: 'text-size', option_c: 'font-size', option_d: 'text-style', correct_option: 'C', marks: 1 },
+      { id: 3, exam_id: 1, question_text: 'Which method adds an element to the end of an array in JavaScript?', option_a: 'push()', option_b: 'add()', option_c: 'append()', option_d: 'insert()', correct_option: 'A', marks: 1 },
+      { id: 4, exam_id: 1, question_text: 'Which symbol is used for single-line comments in JavaScript?', option_a: '<!-- -->', option_b: '#', option_c: '//', option_d: '/* */', correct_option: 'C', marks: 1 },
+      { id: 5, exam_id: 1, question_text: 'Which HTML tag is used for the largest heading?', option_a: '<h6>', option_b: '<heading>', option_c: '<h1>', option_d: '<head>', correct_option: 'C', marks: 1 },
+      { id: 6, exam_id: 2, question_text: 'Which SQL statement is used to fetch data from a database?', option_a: 'GET', option_b: 'SELECT', option_c: 'PULL', option_d: 'FETCH', correct_option: 'B', marks: 1 },
+      { id: 7, exam_id: 2, question_text: 'Which clause is used to filter records in SQL?', option_a: 'ORDER BY', option_b: 'GROUP BY', option_c: 'WHERE', option_d: 'FILTER', correct_option: 'C', marks: 1 },
+      { id: 8, exam_id: 2, question_text: 'Which SQL command is used to remove a table?', option_a: 'DROP TABLE', option_b: 'DELETE TABLE', option_c: 'REMOVE TABLE', option_d: 'CLEAR TABLE', correct_option: 'A', marks: 1 },
+      { id: 9, exam_id: 2, question_text: 'Which aggregate function returns the number of rows?', option_a: 'SUM()', option_b: 'TOTAL()', option_c: 'COUNT()', option_d: 'ROWS()', correct_option: 'C', marks: 1 },
+      { id: 10, exam_id: 2, question_text: 'Which keyword is used to sort results ascending?', option_a: 'SORT ASC', option_b: 'ASC', option_c: 'ORDER ASC', option_d: 'UP', correct_option: 'B', marks: 1 }
+    ],
+    attempts: [],
+    attempt_answers: []
+  };
+}
+
+function getMockDb() {
+  try {
+    const raw = localStorage.getItem(MOCK_DB_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.users && parsed.exams) {
+        return parsed;
+      }
+    }
+  } catch (_) {
+    // Ignore parsing errors and reset mock DB
+  }
+
+  const defaults = getDefaultMockDb();
+  localStorage.setItem(MOCK_DB_STORAGE_KEY, JSON.stringify(defaults));
+  return defaults;
+}
+
+function saveMockDb(db) {
+  localStorage.setItem(MOCK_DB_STORAGE_KEY, JSON.stringify(db));
+}
+
+function nextId(rows) {
+  return rows.length ? Math.max(...rows.map((row) => row.id)) + 1 : 1;
+}
+
+function getAuthUserFromHeaders(headers) {
+  const authHeader = headers?.Authorization || headers?.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  return token && mockSessions.has(token) ? mockSessions.get(token) : null;
+}
+
+function toSafeUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    fullName: user.full_name
+  };
+}
+
+function findOrCreateStudentForUser(db, user) {
+  let student = db.students.find((row) => row.user_id === user.id);
+  if (!student) {
+    student = {
+      id: nextId(db.students),
+      user_id: user.id,
+      name: user.username
+    };
+    db.students.push(student);
+  }
+  return student;
+}
+
+function mockError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  throw error;
+}
+
+function parseRoutePath(url) {
+  return new URL(url, window.location.origin).pathname;
+}
+
+async function mockApiRequest(url, request = {}) {
+  const db = getMockDb();
+  const method = (request.method || 'GET').toUpperCase();
+  const path = parseRoutePath(url);
+  const body = request.body || {};
+  const user = getAuthUserFromHeaders(request.headers || {});
+
+  if (method === 'POST' && path === '/api/auth/register-student') {
+    const fullName = (body.fullName || '').trim();
+    const username = (body.username || '').trim();
+    const password = body.password || '';
+
+    if (!fullName || !username || !password) {
+      mockError(400, 'fullName, username, and password are required');
+    }
+    if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
+      mockError(400, 'Username must be 3-30 characters and use only letters, numbers, or underscore');
+    }
+    if (password.length < 6) {
+      mockError(400, 'Password must be at least 6 characters');
+    }
+    if (db.users.some((row) => row.username === username)) {
+      mockError(409, 'Username already exists');
+    }
+
+    const newUser = {
+      id: nextId(db.users),
+      username,
+      password,
+      role: 'STUDENT',
+      full_name: fullName
+    };
+    db.users.push(newUser);
+    findOrCreateStudentForUser(db, newUser);
+    saveMockDb(db);
+
+    return {
+      message: 'Student account created successfully. Please login.',
+      user: {
+        username,
+        role: 'STUDENT',
+        fullName
+      }
+    };
+  }
+
+  if (method === 'POST' && path === '/api/auth/login') {
+    const username = (body.username || '').trim();
+    const password = body.password || '';
+    const found = db.users.find((row) => row.username === username && row.password === password);
+
+    if (!found) {
+      mockError(401, 'Invalid credentials');
+    }
+
+    const safeUser = toSafeUser(found);
+    if (safeUser.role === 'STUDENT') {
+      findOrCreateStudentForUser(db, safeUser);
+      saveMockDb(db);
+    }
+
+    const token = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    mockSessions.set(token, safeUser);
+    return { token, user: safeUser };
+  }
+
+  if (!user) {
+    mockError(401, 'Unauthorized. Please login first.');
+  }
+
+  if (method === 'POST' && path === '/api/auth/logout') {
+    const authHeader = request.headers?.Authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (token) {
+      mockSessions.delete(token);
+    }
+    return { message: 'Logged out successfully' };
+  }
+
+  if (method === 'GET' && path === '/api/auth/me') {
+    return { user };
+  }
+
+  if (method === 'GET' && path === '/api/exams') {
+    return db.exams.map((exam) => ({
+      ...exam,
+      question_count: db.questions.filter((q) => q.exam_id === exam.id).length
+    }));
+  }
+
+  if (method === 'POST' && path === '/api/attempts/start') {
+    if (user.role !== 'STUDENT') {
+      mockError(403, 'Forbidden for this role.');
+    }
+
+    const examId = Number(body.examId);
+    const exam = db.exams.find((row) => row.id === examId);
+    if (!exam) {
+      mockError(404, 'Exam not found');
+    }
+
+    const student = findOrCreateStudentForUser(db, user);
+    const questions = db.questions.filter((q) => q.exam_id === exam.id);
+    const attempt = {
+      id: nextId(db.attempts),
+      student_id: student.id,
+      exam_id: exam.id,
+      start_time: new Date().toISOString(),
+      end_time: null,
+      total_questions: questions.length,
+      correct_answers: null,
+      score_percentage: null,
+      status: null,
+      verification_status: 'PENDING',
+      verified_by: null,
+      verified_at: null,
+      is_published: 0,
+      published_by: null,
+      published_at: null,
+      admin_remark: null
+    };
+    db.attempts.push(attempt);
+    saveMockDb(db);
+
+    return {
+      attemptId: attempt.id,
+      student: { id: student.id, name: student.name },
+      exam,
+      questions: questions.map((question, index) => ({
+        serial: index + 1,
+        questionId: question.id,
+        questionText: question.question_text,
+        options: {
+          A: question.option_a,
+          B: question.option_b,
+          C: question.option_c,
+          D: question.option_d
+        },
+        marks: question.marks
+      }))
+    };
+  }
+
+  const submitMatch = path.match(/^\/api\/attempts\/(\d+)\/submit$/);
+  if (method === 'POST' && submitMatch) {
+    if (user.role !== 'STUDENT') {
+      mockError(403, 'Forbidden for this role.');
+    }
+
+    const attemptId = Number(submitMatch[1]);
+    const attempt = db.attempts.find((row) => row.id === attemptId);
+    const student = db.students.find((row) => row.id === attempt?.student_id);
+    if (!attempt || !student || student.user_id !== user.id) {
+      mockError(404, 'Attempt not found for this student');
+    }
+    if (attempt.end_time) {
+      mockError(400, 'This attempt is already submitted');
+    }
+
+    const exam = db.exams.find((row) => row.id === attempt.exam_id);
+    const questions = db.questions.filter((row) => row.exam_id === attempt.exam_id);
+    const answers = Array.isArray(body.answers) ? body.answers : [];
+    const answerMap = new Map(answers.map((row) => [Number(row.questionId), row.selectedOption || null]));
+
+    db.attempt_answers = db.attempt_answers.filter((row) => row.attempt_id !== attempt.id);
+    let correct = 0;
+
+    questions.forEach((question) => {
+      const selected = answerMap.get(question.id) || null;
+      const isCorrect = selected === question.correct_option ? 1 : 0;
+      if (isCorrect) correct += 1;
+
+      db.attempt_answers.push({
+        id: nextId(db.attempt_answers),
+        attempt_id: attempt.id,
+        question_id: question.id,
+        selected_option: selected,
+        is_correct: isCorrect
+      });
+    });
+
+    const score = questions.length ? (correct / questions.length) * 100 : 0;
+    attempt.end_time = new Date().toISOString();
+    attempt.total_questions = questions.length;
+    attempt.correct_answers = correct;
+    attempt.score_percentage = Number(score.toFixed(2));
+    attempt.status = score >= exam.pass_percentage ? 'PASS' : 'FAIL';
+    attempt.verification_status = 'PENDING';
+    attempt.verified_by = null;
+    attempt.verified_at = null;
+    attempt.is_published = 0;
+    attempt.published_by = null;
+    attempt.published_at = null;
+    attempt.admin_remark = null;
+    saveMockDb(db);
+
+    return { message: 'Exam submitted. Result is pending admin verification and publication.' };
+  }
+
+  if (method === 'GET' && path === '/api/student/results') {
+    if (user.role !== 'STUDENT') {
+      mockError(403, 'Forbidden for this role.');
+    }
+
+    const student = findOrCreateStudentForUser(db, user);
+    const rows = db.attempts
+      .filter((row) => row.student_id === student.id && row.end_time && row.verification_status === 'VERIFIED' && row.is_published === 1)
+      .sort((a, b) => b.id - a.id)
+      .map((row) => ({
+        attempt_id: row.id,
+        exam_title: db.exams.find((e) => e.id === row.exam_id)?.title || 'Exam',
+        total_questions: row.total_questions,
+        correct_answers: row.correct_answers,
+        score_percentage: row.score_percentage,
+        status: row.status,
+        verified_at: row.verified_at,
+        published_at: row.published_at,
+        admin_remark: row.admin_remark
+      }));
+    return rows;
+  }
+
+  if (method === 'GET' && path === '/api/admin/attempts') {
+    if (user.role !== 'ADMIN') {
+      mockError(403, 'Forbidden for this role.');
+    }
+
+    return db.attempts
+      .slice()
+      .sort((a, b) => b.id - a.id)
+      .map((row) => {
+        const student = db.students.find((s) => s.id === row.student_id);
+        const studentUser = db.users.find((u) => u.id === student?.user_id);
+        const exam = db.exams.find((e) => e.id === row.exam_id);
+        const verifiedBy = db.users.find((u) => u.id === row.verified_by);
+        const publishedBy = db.users.find((u) => u.id === row.published_by);
+
+        return {
+          attempt_id: row.id,
+          student_name: student?.name || '',
+          student_username: studentUser?.username || '',
+          exam_title: exam?.title || 'Exam',
+          start_time: row.start_time,
+          end_time: row.end_time,
+          total_questions: row.total_questions,
+          correct_answers: row.correct_answers,
+          score_percentage: row.score_percentage,
+          status: row.status,
+          verification_status: row.verification_status,
+          is_published: row.is_published,
+          admin_remark: row.admin_remark,
+          verified_by_username: verifiedBy?.username || null,
+          verified_at: row.verified_at,
+          published_by_username: publishedBy?.username || null,
+          published_at: row.published_at,
+          lifecycle_status: !row.end_time
+            ? 'IN_PROGRESS'
+            : row.is_published
+              ? 'PUBLISHED'
+              : row.verification_status === 'VERIFIED'
+                ? 'VERIFIED_PENDING_PUBLISH'
+                : 'SUBMITTED_PENDING_VERIFICATION'
+        };
+      });
+  }
+
+  const verifyMatch = path.match(/^\/api\/admin\/attempts\/(\d+)\/verify$/);
+  if (method === 'PATCH' && verifyMatch) {
+    if (user.role !== 'ADMIN') {
+      mockError(403, 'Forbidden for this role.');
+    }
+
+    const attempt = db.attempts.find((row) => row.id === Number(verifyMatch[1]));
+    if (!attempt) {
+      mockError(404, 'Attempt not found');
+    }
+    if (!attempt.end_time) {
+      mockError(400, 'Cannot verify an in-progress attempt');
+    }
+
+    attempt.verification_status = 'VERIFIED';
+    attempt.verified_by = user.id;
+    attempt.verified_at = new Date().toISOString();
+    attempt.admin_remark = (body.remark || '').trim() || null;
+    saveMockDb(db);
+    return { message: 'Attempt verified successfully' };
+  }
+
+  const publishMatch = path.match(/^\/api\/admin\/attempts\/(\d+)\/publish$/);
+  if (method === 'PATCH' && publishMatch) {
+    if (user.role !== 'ADMIN') {
+      mockError(403, 'Forbidden for this role.');
+    }
+
+    const attempt = db.attempts.find((row) => row.id === Number(publishMatch[1]));
+    if (!attempt) {
+      mockError(404, 'Attempt not found');
+    }
+    if (!attempt.end_time) {
+      mockError(400, 'Cannot publish an in-progress attempt');
+    }
+    if (attempt.verification_status !== 'VERIFIED') {
+      mockError(400, 'Verify attempt before publishing');
+    }
+
+    attempt.is_published = 1;
+    attempt.published_by = user.id;
+    attempt.published_at = new Date().toISOString();
+    saveMockDb(db);
+    return { message: 'Result published successfully' };
+  }
+
+  mockError(405, `Route not supported in static mode: ${method} ${path}`);
+}
+
 function resetExamState() {
   currentAttemptId = null;
   currentQuestions = [];
@@ -91,6 +505,17 @@ async function apiRequest(url, options = {}) {
 
   if (options.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
+  }
+
+  if (IS_GITHUB_PAGES) {
+    try {
+      return await mockApiRequest(url, {
+        ...options,
+        headers
+      });
+    } catch (error) {
+      throw new Error(error.message || 'Static mode request failed');
+    }
   }
 
   const response = await fetch(url, {
@@ -535,4 +960,8 @@ adminAttemptsBox.addEventListener('click', async (event) => {
 });
 
 initializeTheme();
+if (IS_GITHUB_PAGES && registerStatus) {
+  registerStatus.textContent = 'GitHub Pages demo mode active (browser-only data storage).';
+  registerStatus.className = 'info';
+}
 renderAuthState();
